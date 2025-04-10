@@ -7,7 +7,7 @@ const chalk = require("chalk");
 const TEA_RPC_URL = "https://tea-sepolia.g.alchemy.com/public";
 const ADDRESSES_FILE = path.join(__dirname, "address.txt");
 const AMOUNT_TO_SEND = "0.01";
-const ADDRESSES_TO_SELECT = 12;
+const ADDRESSES_TO_SELECT = 110;
 const INTERVAL_HOURS = 24;
 
 function getPrivateKey() {
