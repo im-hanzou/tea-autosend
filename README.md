@@ -1,5 +1,5 @@
 # TEA Autosend Daily
-Script to send daily TEA tokens to 12 random addresses.
+Script to send daily TEA tokens to 200 random addresses.
 ## Tools and components required
 1. Guide: [Tea.xyz](https://tea.xyz/blog/attestation-flow-for-tea-airdrop)
 2. Token Faucet: [here](https://faucet-assam.tea.xyz/)
