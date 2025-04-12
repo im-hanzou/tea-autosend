@@ -10,6 +10,14 @@ const AMOUNT_TO_SEND = "0.01";
 const ADDRESSES_TO_SELECT = 200;
 const INTERVAL_HOURS = 24;
 
+const BATCH_SIZE = 20;
+const DELAY_BETWEEN_TXS_MS = 2000;
+const DELAY_BETWEEN_BATCHES_MS = 30000;
+const MAX_RETRIES = 5;
+const RETRY_DELAY_MS = 10000;
+
+let provider;
+
 function getPrivateKey() {
   return new Promise((resolve) => {
     const rl = readline.createInterface({
@@ -68,36 +76,80 @@ function selectRandomAddresses(addresses, count) {
   return selected;
 }
 
-async function sendTea(wallet, addresses) {
-  const timestamp = new Date().toLocaleString();
-  console.log(
-    chalk.bgBlue.white("\n ⏱️  " + timestamp + " ") + 
-    chalk.blue(` Starting transfers to ${chalk.bold(addresses.length)} addresses`)
-  );
+async function retryOperation(operation, maxRetries = MAX_RETRIES) {
+  let lastError;
   
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      console.log(chalk.yellow(`\n⚠️ Error on attempt ${attempt + 1}/${maxRetries}: ${error.message}`));
+      
+      if (error.message.includes("capacity exceeded") || 
+          error.message.includes("rate limit") || 
+          error.message.includes("too many requests")) {
+        if (attempt < maxRetries - 1) {
+          console.log(chalk.yellow(`Retrying in ${RETRY_DELAY_MS/1000} seconds...`));
+          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+        }
+      } else {
+        throw error;
+      }
+    }
+  }
+  
+  throw lastError;
+}
+
+async function processInBatches(addresses, wallet) {
+  const totalBatches = Math.ceil(addresses.length / BATCH_SIZE);
+  console.log(chalk.blue(`\n📦 Processing ${addresses.length} addresses in ${totalBatches} batches of ${BATCH_SIZE}`));
+  
+  for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
+    const startIdx = batchIdx * BATCH_SIZE;
+    const endIdx = Math.min(startIdx + BATCH_SIZE, addresses.length);
+    const batchAddresses = addresses.slice(startIdx, endIdx);
+    
+    console.log(chalk.bgCyan.black(`\n 🚀 Processing Batch ${batchIdx + 1}/${totalBatches} `));
+    
+    await sendTeaBatch(wallet, batchAddresses, startIdx);
+    
+    if (batchIdx < totalBatches - 1) {
+      console.log(chalk.magenta(`\n😴 Cooling down for ${DELAY_BETWEEN_BATCHES_MS/1000} seconds before next batch...`));
+      await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES_MS));
+    }
+  }
+}
+
+async function sendTeaBatch(wallet, addresses, startIdx) {
   for (let i = 0; i < addresses.length; i++) {
+    const globalIndex = startIdx + i;
     const address = addresses[i];
+    
     try {
       console.log(
-        chalk.cyan(`[${i+1}/${addresses.length}]`) + 
+        chalk.cyan(`[${globalIndex + 1}/${ADDRESSES_TO_SELECT}]`) + 
         chalk.white(` Sending ${chalk.yellowBright(AMOUNT_TO_SEND)} TEA to `) + 
         chalk.green(address) + chalk.white("...")
       );
       
-      const tx = await wallet.sendTransaction({
-        to: address,
-        value: ethers.parseEther(AMOUNT_TO_SEND),
+      await retryOperation(async () => {
+        const tx = await wallet.sendTransaction({
+          to: address,
+          value: ethers.parseEther(AMOUNT_TO_SEND),
+        });
+        
+        console.log(chalk.gray("⛓️  Transaction sent: ") + chalk.magenta(tx.hash));
+        const receipt = await tx.wait();
+        console.log(
+          chalk.green("✅ Transaction confirmed in block ") + 
+          chalk.whiteBright.bold(receipt.blockNumber)
+        );
       });
       
-      console.log(chalk.gray("⛓️  Transaction sent: ") + chalk.magenta(tx.hash));
-      const receipt = await tx.wait();
-      console.log(
-        chalk.green("✅ Transaction confirmed in block ") + 
-        chalk.whiteBright.bold(receipt.blockNumber)
-      );
-      
       if (i < addresses.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_TXS_MS));
       }
     } catch (error) {
       console.error(
@@ -106,11 +158,35 @@ async function sendTea(wallet, addresses) {
       );
     }
   }
-  
-  console.log(
-    chalk.bgGreen.black("\n ✅ COMPLETE ") + 
-    chalk.green(` All transfers completed at ${new Date().toLocaleString()}`)
-  );
+}
+
+async function checkWalletBalance(wallet, numberOfAddresses) {
+  try {
+    return await retryOperation(async () => {
+      const balance = await provider.getBalance(wallet.address);
+      const balanceInTea = ethers.formatEther(balance);
+      console.log(
+        chalk.white("💰 Current wallet balance: ") + 
+        chalk.yellowBright(balanceInTea) + 
+        chalk.yellow(" TEA")
+      );
+      
+      const minRequired = ethers.parseEther(AMOUNT_TO_SEND) * BigInt(numberOfAddresses);
+      
+      if (balance < minRequired) {
+        console.error(
+          chalk.bgRed.white(" LOW BALANCE ") + 
+          chalk.red(` Insufficient balance for sending to ${numberOfAddresses} addresses. Need at least ${ethers.formatEther(minRequired)} TEA (excluding gas).`)
+        );
+        return false;
+      }
+      
+      return true;
+    });
+  } catch (error) {
+    console.error(chalk.bgRed.white(" ERROR ") + ` Failed to check balance: ${error.message}`);
+    return false;
+  }
 }
 
 async function main() {
@@ -124,19 +200,16 @@ async function main() {
       process.exit(1);
     }
     
-    const provider = new ethers.JsonRpcProvider(TEA_RPC_URL);
+    provider = new ethers.JsonRpcProvider(TEA_RPC_URL);
     const wallet = new ethers.Wallet(privateKey, provider);
     const walletAddress = wallet.address;
     
     console.log(chalk.white("\n🔑 Wallet address: ") + chalk.greenBright(walletAddress));
     
-    const balance = await provider.getBalance(walletAddress);
-    const balanceInTea = ethers.formatEther(balance);
-    console.log(
-      chalk.white("💰 Wallet balance: ") + 
-      chalk.yellowBright(balanceInTea) + 
-      chalk.yellow(" TEA")
-    );
+    const hasEnoughBalance = await checkWalletBalance(wallet, ADDRESSES_TO_SELECT);
+    if (!hasEnoughBalance) {
+      process.exit(1);
+    }
     
     const allAddresses = readAddressesFromFile();
     console.log(
@@ -151,11 +224,19 @@ async function main() {
       chalk.white(`Selected ${chalk.greenBright(selectedAddresses.length)} addresses for sending:`)
     );
     
-    selectedAddresses.forEach((addr, i) => 
+    selectedAddresses.slice(0, 10).forEach((addr, i) => 
       console.log(chalk.gray(`${i+1}.`) + chalk.green(` ${addr}`))
     );
+    if (selectedAddresses.length > 10) {
+      console.log(chalk.gray(`... and ${selectedAddresses.length - 10} more addresses`));
+    }
     
-    await sendTea(wallet, selectedAddresses);
+    await processInBatches(selectedAddresses, wallet);
+    
+    console.log(
+      chalk.bgGreen.black("\n ✅ COMPLETE ") + 
+      chalk.green(` All transfers completed at ${new Date().toLocaleString()}`)
+    );
     
     console.log(
       chalk.bgMagenta.white(`\n ⏰ Scheduling next run in ${INTERVAL_HOURS} hours `)
@@ -163,20 +244,16 @@ async function main() {
     
     setInterval(async () => {
       try {
-        const currentBalance = await provider.getBalance(walletAddress);
-        const currentBalanceInTea = ethers.formatEther(currentBalance);
         console.log(
           chalk.bgYellow.black(`\n ⏱️  ${new Date().toLocaleString()} `) + 
-          chalk.yellow(` Current wallet balance: ${chalk.bold(currentBalanceInTea)} TEA`)
+          chalk.yellow(` Time for scheduled run`)
         );
         
-        const minRequired = ethers.parseEther(AMOUNT_TO_SEND) * BigInt(ADDRESSES_TO_SELECT);
+        provider = new ethers.JsonRpcProvider(TEA_RPC_URL);
+        const newWallet = new ethers.Wallet(privateKey, provider);
         
-        if (currentBalance < minRequired) {
-          console.error(
-            chalk.bgRed.white(" LOW BALANCE ") + 
-            chalk.red(` Insufficient balance for sending to ${ADDRESSES_TO_SELECT} addresses. Need at least ${ethers.formatEther(minRequired)} TEA`)
-          );
+        const hasEnoughBalance = await checkWalletBalance(newWallet, ADDRESSES_TO_SELECT);
+        if (!hasEnoughBalance) {
           return;
         }
         
@@ -185,11 +262,19 @@ async function main() {
           chalk.white(`Selected ${chalk.greenBright(newSelectedAddresses.length)} addresses for sending:`)
         );
         
-        newSelectedAddresses.forEach((addr, i) => 
+        newSelectedAddresses.slice(0, 10).forEach((addr, i) => 
           console.log(chalk.gray(`${i+1}.`) + chalk.green(` ${addr}`))
         );
+        if (newSelectedAddresses.length > 10) {
+          console.log(chalk.gray(`... and ${newSelectedAddresses.length - 10} more addresses`));
+        }
         
-        await sendTea(wallet, newSelectedAddresses);
+        await processInBatches(newSelectedAddresses, newWallet);
+        
+        console.log(
+          chalk.bgGreen.black("\n ✅ COMPLETE ") + 
+          chalk.green(` All transfers completed at ${new Date().toLocaleString()}`)
+        );
         
         const nextRunTime = new Date(Date.now() + INTERVAL_HOURS * 60 * 60 * 1000).toLocaleString();
         console.log(
