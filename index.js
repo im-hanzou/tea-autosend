@@ -58,14 +58,16 @@ function readAddressesFromFile() {
   }
 }
 
-function selectRandomAddresses(addresses, count) {
-  if (addresses.length <= count) {
-    console.log(chalk.yellow(`⚠️  Not enough addresses in file. Using all ${addresses.length} available addresses.`));
-    return [...addresses];
+function selectRandomAddresses(addresses, count, walletAddress) {
+  const filteredAddresses = addresses.filter(addr => addr.toLowerCase() !== walletAddress.toLowerCase());
+  
+  if (filteredAddresses.length <= count) {
+    console.log(chalk.yellow(`⚠️  Not enough addresses in file. Using all ${filteredAddresses.length} available addresses.`));
+    return [...filteredAddresses];
   }
 
   const selected = [];
-  const addressesCopy = [...addresses];
+  const addressesCopy = [...filteredAddresses];
   
   for (let i = 0; i < count; i++) {
     const randomIndex = Math.floor(Math.random() * addressesCopy.length);
@@ -129,7 +131,7 @@ async function sendTeaBatch(wallet, addresses, startIdx) {
     
     try {
       console.log(
-        chalk.cyan(`[${globalIndex + 1}/${ADDRESSES_TO_SELECT}]`) + 
+        chalk.cyan(`[${globalIndex + 1}/${addresses.length}]`) + 
         chalk.white(` Sending ${chalk.yellowBright(AMOUNT_TO_SEND)} TEA to `) + 
         chalk.green(address) + chalk.white("...")
       );
@@ -219,7 +221,7 @@ async function main() {
     );
     
     console.log(chalk.bgCyan.black("\n 🚀 INITIAL RUN "));
-    const selectedAddresses = selectRandomAddresses(allAddresses, ADDRESSES_TO_SELECT);
+    const selectedAddresses = selectRandomAddresses(allAddresses, ADDRESSES_TO_SELECT, walletAddress);
     console.log(
       chalk.white(`Selected ${chalk.greenBright(selectedAddresses.length)} addresses for sending:`)
     );
@@ -257,7 +259,7 @@ async function main() {
           return;
         }
         
-        const newSelectedAddresses = selectRandomAddresses(allAddresses, ADDRESSES_TO_SELECT);
+        const newSelectedAddresses = selectRandomAddresses(allAddresses, ADDRESSES_TO_SELECT, newWallet.address);
         console.log(
           chalk.white(`Selected ${chalk.greenBright(newSelectedAddresses.length)} addresses for sending:`)
         );
