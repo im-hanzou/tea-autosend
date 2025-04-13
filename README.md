@@ -1,7 +1,7 @@
 # TEA Autosend Daily
 This script sends TEA tokens daily to 200 eligible testnet wallet addresses in sequence from a predefined list.
 
-Eligible TEA Testnet wallet address: [here](https://docs.google.com/spreadsheets/d/1lw4iqOUaUSkPuxDPpck_LH95bJQddlrlTcfL8Nsp0Y4/)
+Eligible TEA Testnet wallet addresses: [here](https://docs.google.com/spreadsheets/d/1lw4iqOUaUSkPuxDPpck_LH95bJQddlrlTcfL8Nsp0Y4/) or in the file named `address.txt`
 ## Tools and components required
 1. Guide: [Tea.xyz](https://tea.xyz/blog/attestation-flow-for-tea-airdrop)
 2. Token Faucet: [here](https://faucet-assam.tea.xyz/)
