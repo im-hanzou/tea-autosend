@@ -1,7 +1,7 @@
 {
   "name": "tea-autosend",
   "version": "1.0.0",
-  "description": "Script to send daily TEA tokens to 12 random addresses",
+  "description": "Script to send daily TEA tokens to 200 random addresses",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
