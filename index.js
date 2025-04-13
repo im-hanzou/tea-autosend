@@ -6,6 +6,7 @@ const chalk = require("chalk");
 
 const TEA_RPC_URL = "https://tea-sepolia.g.alchemy.com/public";
 const ADDRESSES_FILE = path.join(__dirname, "address.txt");
+const CURRENT_LINE_FILE = path.join(__dirname, "current_line.txt");
 const AMOUNT_TO_SEND = "0.01";
 const ADDRESSES_TO_SELECT = 200;
 const INTERVAL_HOURS = 24;
@@ -15,6 +16,8 @@ const DELAY_BETWEEN_TXS_MS = 2000;
 const DELAY_BETWEEN_BATCHES_MS = 30000;
 const MAX_RETRIES = 5;
 const RETRY_DELAY_MS = 10000;
+
+let currentLineIndex = 0;
 
 let provider;
 
@@ -41,39 +44,48 @@ function getPrivateKey() {
 function readAddressesFromFile() {
   try {
     const fileContent = fs.readFileSync(ADDRESSES_FILE, "utf8");
-    const addresses = fileContent
+    const entries = fileContent
       .split("\n")
       .map(line => line.trim())
-      .filter(line => line && line.startsWith("0x") && line.length === 42);
+      .filter(line => line && line.includes(","));
     
-    if (addresses.length === 0) {
-      console.error(chalk.bgRed.white(" ERROR ") + " No valid addresses found in address.txt");
+    const parsedEntries = entries.map(entry => {
+      const [username, address] = entry.split(",");
+      return { username: username.trim(), address: address.trim() };
+    }).filter(entry => entry.address && entry.address.startsWith("0x") && entry.address.length === 42);
+    
+    if (parsedEntries.length === 0) {
+      console.error(chalk.bgRed.white(" ERROR ") + " No valid address entries found in address.txt");
       process.exit(1);
     }
     
-    return addresses;
+    return parsedEntries;
   } catch (error) {
     console.error(chalk.bgRed.white(" ERROR ") + ` Error reading addresses file: ${error.message}`);
     process.exit(1);
   }
 }
 
-function selectRandomAddresses(addresses, count, walletAddress) {
-  const filteredAddresses = addresses.filter(addr => addr.toLowerCase() !== walletAddress.toLowerCase());
+function selectSequentialAddresses(addressEntries, count, walletAddress, startIndex) {
+  const filteredEntries = addressEntries.filter(entry => entry.address.toLowerCase() !== walletAddress.toLowerCase());
   
-  if (filteredAddresses.length <= count) {
-    console.log(chalk.yellow(`⚠️  Not enough addresses in file. Using all ${filteredAddresses.length} available addresses.`));
-    return [...filteredAddresses];
+  if (filteredEntries.length === 0) {
+    console.error(chalk.bgRed.white(" ERROR ") + " No valid addresses to send to after filtering out your own address");
+    process.exit(1);
   }
-
+  
   const selected = [];
-  const addressesCopy = [...filteredAddresses];
+  let currentIndex = startIndex % filteredEntries.length;
   
   for (let i = 0; i < count; i++) {
-    const randomIndex = Math.floor(Math.random() * addressesCopy.length);
-    selected.push(addressesCopy[randomIndex]);
-    addressesCopy.splice(randomIndex, 1);
+    selected.push(filteredEntries[currentIndex]);
+    currentIndex = (currentIndex + 1) % filteredEntries.length;
+    if (currentIndex === startIndex % filteredEntries.length && i < count - 1) {
+      console.log(chalk.yellow(`⚠️  Reached end of address list, starting over from the beginning.`));
+    }
   }
+  
+  currentLineIndex = currentIndex;
   
   return selected;
 }
@@ -104,18 +116,18 @@ async function retryOperation(operation, maxRetries = MAX_RETRIES) {
   throw lastError;
 }
 
-async function processInBatches(addresses, wallet) {
-  const totalBatches = Math.ceil(addresses.length / BATCH_SIZE);
-  console.log(chalk.blue(`\n📦 Processing ${addresses.length} addresses in ${totalBatches} batches of ${BATCH_SIZE}`));
+async function processInBatches(addressEntries, wallet) {
+  const totalBatches = Math.ceil(addressEntries.length / BATCH_SIZE);
+  console.log(chalk.blue(`\n📦 Processing ${addressEntries.length} addresses in ${totalBatches} batches of ${BATCH_SIZE}`));
   
   for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
     const startIdx = batchIdx * BATCH_SIZE;
-    const endIdx = Math.min(startIdx + BATCH_SIZE, addresses.length);
-    const batchAddresses = addresses.slice(startIdx, endIdx);
+    const endIdx = Math.min(startIdx + BATCH_SIZE, addressEntries.length);
+    const batchEntries = addressEntries.slice(startIdx, endIdx);
     
     console.log(chalk.bgCyan.black(`\n 🚀 Processing Batch ${batchIdx + 1}/${totalBatches} `));
     
-    await sendTeaBatch(wallet, batchAddresses, startIdx);
+    await sendTeaBatch(wallet, batchEntries, startIdx);
     
     if (batchIdx < totalBatches - 1) {
       console.log(chalk.magenta(`\n😴 Cooling down for ${DELAY_BETWEEN_BATCHES_MS/1000} seconds before next batch...`));
@@ -124,15 +136,17 @@ async function processInBatches(addresses, wallet) {
   }
 }
 
-async function sendTeaBatch(wallet, addresses, startIdx) {
-  for (let i = 0; i < addresses.length; i++) {
+async function sendTeaBatch(wallet, addressEntries, startIdx) {
+  for (let i = 0; i < addressEntries.length; i++) {
     const globalIndex = startIdx + i;
-    const address = addresses[i];
+    const { username, address } = addressEntries[i];
     
     try {
       console.log(
-        chalk.cyan(`[${globalIndex + 1}/${addresses.length}]`) + 
+        chalk.cyan(`[${globalIndex + 1}/${addressEntries.length}]`) + 
         chalk.white(` Sending ${chalk.yellowBright(AMOUNT_TO_SEND)} TEA to `) + 
+        chalk.blue(`${username}`) + 
+        chalk.white(" at ") +
         chalk.green(address) + chalk.white("...")
       );
       
@@ -150,13 +164,13 @@ async function sendTeaBatch(wallet, addresses, startIdx) {
         );
       });
       
-      if (i < addresses.length - 1) {
+      if (i < addressEntries.length - 1) {
         await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_TXS_MS));
       }
     } catch (error) {
       console.error(
         chalk.bgRed.white(" FAILED ") + 
-        chalk.red(` Could not send to ${address}: ${error.message}`)
+        chalk.red(` Could not send to ${username} (${address}): ${error.message}`)
       );
     }
   }
@@ -191,9 +205,41 @@ async function checkWalletBalance(wallet, numberOfAddresses) {
   }
 }
 
+function saveCurrentLineIndex() {
+  try {
+    fs.writeFileSync(CURRENT_LINE_FILE, currentLineIndex.toString(), "utf8");
+    console.log(chalk.gray(`📝 Saved current line (${currentLineIndex}) to ${CURRENT_LINE_FILE}`));
+  } catch (error) {
+    console.warn(chalk.yellow(`⚠️ Could not save current line: ${error.message}`));
+  }
+}
+
+function loadCurrentLineIndex() {
+  try {
+    if (fs.existsSync(CURRENT_LINE_FILE)) {
+      const savedIndex = parseInt(fs.readFileSync(CURRENT_LINE_FILE, "utf8").trim());
+      if (!isNaN(savedIndex)) {
+        currentLineIndex = savedIndex;
+        return savedIndex;
+      }
+    }
+  } catch (error) {
+    console.warn(chalk.yellow(`⚠️ Could not load current lines: ${error.message}`));
+  }
+  return 0;
+}
+
 async function main() {
   try {
-    console.log(chalk.bgYellow.black("\n =========== IM-Hanzou | TEA Autosend Daily =========== \n"));
+      console.log(chalk.cyan(`
+╔═══════════════════════════════════════════════╗
+║        sepolia.app.tea.xyz - AutoTXs          ║
+║     Github: https://github.com/im-hanzou      ║
+╚═══════════════════════════════════════════════╝
+`));
+    
+    const startIndex = loadCurrentLineIndex();
+    console.log(chalk.white("📍 Starting from lines: ") + chalk.yellowBright(startIndex));
     
     const privateKey = await getPrivateKey();
     
@@ -208,32 +254,34 @@ async function main() {
     
     console.log(chalk.white("\n🔑 Wallet address: ") + chalk.greenBright(walletAddress));
     
-    const hasEnoughBalance = await checkWalletBalance(wallet, ADDRESSES_TO_SELECT);
+    const allAddressEntries = readAddressesFromFile();
+    console.log(
+      chalk.white("📋 Loaded ") + 
+      chalk.greenBright(allAddressEntries.length) + 
+      chalk.white(" address entries from address.txt")
+    );
+    
+    console.log(chalk.bgCyan.black("\n 🚀 INITIAL RUN "));
+    const selectedEntries = selectSequentialAddresses(allAddressEntries, ADDRESSES_TO_SELECT, walletAddress, startIndex);
+    console.log(
+      chalk.white(`Selected ${chalk.greenBright(selectedEntries.length)} addresses for sending:`)
+    );
+    
+    const hasEnoughBalance = await checkWalletBalance(wallet, selectedEntries.length);
     if (!hasEnoughBalance) {
       process.exit(1);
     }
     
-    const allAddresses = readAddressesFromFile();
-    console.log(
-      chalk.white("📋 Loaded ") + 
-      chalk.greenBright(allAddresses.length) + 
-      chalk.white(" addresses from address.txt")
+    selectedEntries.slice(0, 10).forEach((entry, i) => 
+      console.log(chalk.gray(`${i+1}.`) + chalk.blue(` ${entry.username}`) + chalk.gray(` (${entry.address})`))
     );
-    
-    console.log(chalk.bgCyan.black("\n 🚀 INITIAL RUN "));
-    const selectedAddresses = selectRandomAddresses(allAddresses, ADDRESSES_TO_SELECT, walletAddress);
-    console.log(
-      chalk.white(`Selected ${chalk.greenBright(selectedAddresses.length)} addresses for sending:`)
-    );
-    
-    selectedAddresses.slice(0, 10).forEach((addr, i) => 
-      console.log(chalk.gray(`${i+1}.`) + chalk.green(` ${addr}`))
-    );
-    if (selectedAddresses.length > 10) {
-      console.log(chalk.gray(`... and ${selectedAddresses.length - 10} more addresses`));
+    if (selectedEntries.length > 10) {
+      console.log(chalk.gray(`... and ${selectedEntries.length - 10} more addresses`));
     }
     
-    await processInBatches(selectedAddresses, wallet);
+    await processInBatches(selectedEntries, wallet);
+    
+    saveCurrentLineIndex();
     
     console.log(
       chalk.bgGreen.black("\n ✅ COMPLETE ") + 
@@ -254,24 +302,29 @@ async function main() {
         provider = new ethers.JsonRpcProvider(TEA_RPC_URL);
         const newWallet = new ethers.Wallet(privateKey, provider);
         
-        const hasEnoughBalance = await checkWalletBalance(newWallet, ADDRESSES_TO_SELECT);
+        const refreshedAddressEntries = readAddressesFromFile();
+        
+        console.log(chalk.white("📍 Continuing from lines: ") + chalk.yellowBright(currentLineIndex));
+        
+        const newSelectedEntries = selectSequentialAddresses(refreshedAddressEntries, ADDRESSES_TO_SELECT, newWallet.address, currentLineIndex);
+        
+        const hasEnoughBalance = await checkWalletBalance(newWallet, newSelectedEntries.length);
         if (!hasEnoughBalance) {
           return;
         }
         
-        const newSelectedAddresses = selectRandomAddresses(allAddresses, ADDRESSES_TO_SELECT, newWallet.address);
         console.log(
-          chalk.white(`Selected ${chalk.greenBright(newSelectedAddresses.length)} addresses for sending:`)
+          chalk.white(`Selected ${chalk.greenBright(newSelectedEntries.length)} addresses for sending:`)
         );
         
-        newSelectedAddresses.slice(0, 10).forEach((addr, i) => 
-          console.log(chalk.gray(`${i+1}.`) + chalk.green(` ${addr}`))
+        newSelectedEntries.slice(0, 10).forEach((entry, i) => 
+          console.log(chalk.gray(`${i+1}.`) + chalk.blue(` ${entry.username}`) + chalk.gray(` (${entry.address})`))
         );
-        if (newSelectedAddresses.length > 10) {
-          console.log(chalk.gray(`... and ${newSelectedAddresses.length - 10} more addresses`));
+        if (newSelectedEntries.length > 10) {
+          console.log(chalk.gray(`... and ${newSelectedEntries.length - 10} more addresses`));
         }
         
-        await processInBatches(newSelectedAddresses, newWallet);
+        await processInBatches(newSelectedEntries, newWallet);
         
         console.log(
           chalk.bgGreen.black("\n ✅ COMPLETE ") + 
@@ -292,7 +345,7 @@ async function main() {
     
     console.log(
       chalk.bgBlue.white("\n 🔄 RUNNING ") + 
-      chalk.blue(` Script is now running and will send to ${chalk.bold(ADDRESSES_TO_SELECT)} random addresses every ${chalk.bold(INTERVAL_HOURS)} hours`)
+      chalk.blue(` Script is now running and will send to ${chalk.bold(ADDRESSES_TO_SELECT)} sequential addresses every ${chalk.bold(INTERVAL_HOURS)} hours`)
     );
     
   } catch (error) {
